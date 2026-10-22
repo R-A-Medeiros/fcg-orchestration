@@ -1,0 +1,92 @@
+# Infraestrutura: RabbitMQ para o cluster Kubernetes local.
+# Deployment + Service (nome "rabbitmq", usado por RabbitMq__Host nos serviços).
+# Credenciais em Secret.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rabbitmq-secret
+  labels:
+    app: rabbitmq
+type: Opaque
+stringData:
+  RABBITMQ_DEFAULT_USER: "guest"
+  RABBITMQ_DEFAULT_PASS: "guest"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  labels:
+    app: rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: RABBITMQ_DEFAULT_USER
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: RABBITMQ_DEFAULT_PASS
+          # 'rabbitmq-diagnostics ping' é pesado e pode levar vários segundos.
+          # O timeout padrão de 1s derruba o pod mesmo com o broker saudável,
+          # por isso timeoutSeconds e failureThreshold são generosos aqui.
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 15
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  labels:
+    app: rabbitmq
+spec:
+  type: ClusterIP
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672

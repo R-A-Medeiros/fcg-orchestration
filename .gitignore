@@ -1,0 +1,11 @@
+# Clones locais dos repositórios de serviço (ficam como pastas irmãs, não aqui).
+# Caso alguém clone os serviços dentro desta pasta por engano, não versione:
+fcg-users-api/
+fcg-catalog-api/
+fcg-payments-api/
+fcg-notifications-api/
+
+# Sistema operacional / editor
+.vs/
+*.user
+.DS_Store

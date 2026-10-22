@@ -1,0 +1,157 @@
+# FIAP Cloud Games (FCG) - orquestração local completa.
+# Sobe a infraestrutura (RabbitMQ + PostgreSQL) e os 4 microsserviços.
+#
+# PRÉ-REQUISITO: os 4 repositórios de serviço devem estar clonados como pastas
+# IRMÃS deste repositório de orquestração, assim:
+#
+#   <pasta-pai>/
+#   ├── fcg-orchestration/     (este repo)
+#   ├── fcg-users-api/
+#   ├── fcg-catalog-api/
+#   ├── fcg-payments-api/
+#   └── fcg-notifications-api/
+#
+# Uso (a partir desta pasta):
+#   docker compose up --build
+#
+# Os bancos E o schema (tabelas) são criados automaticamente na primeira subida
+# do Postgres, via scripts em ./infra/postgres-init. Os db/init.sql de cada
+# serviço são montados como volumes read-only (fonte única de verdade).
+#
+# Recriar do zero (apaga dados e reaplica o schema):
+#   docker compose down -v && docker compose up --build
+
+services:
+  # ---------------------------------------------------------------- infra ----
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: fcg-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI (http://localhost:15672 - guest/guest)
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:16
+    container_name: fcg-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Cria os 3 bancos e aplica o schema na primeira inicialização.
+      - ./infra/postgres-init:/docker-entrypoint-initdb.d:ro
+      # Schema de cada serviço (fonte única: os db/init.sql dos repositórios irmãos).
+      - ../fcg-users-api/db/init.sql:/fcg-schemas/users.schema.sql:ro
+      - ../fcg-catalog-api/db/init.sql:/fcg-schemas/catalog.schema.sql:ro
+      - ../fcg-payments-api/db/init.sql:/fcg-schemas/payments.schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------- services ----
+  users-api:
+    build:
+      context: ../fcg-users-api
+      dockerfile: Dockerfile
+    image: fcg/users-api:latest
+    container_name: fcg-users-api
+    ports:
+      - "5001:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=fcg_users;Username=postgres;Password=postgres"
+      Settings__Jwt__Issuer: "FCG"
+      Settings__Jwt__Audience: "FCG.Clients"
+      Settings__Jwt__SigningKey: "CHANGE_ME_super_secret_shared_key_min_32_chars_long!!"
+      Settings__Jwt__ExpiresMinutes: "60"
+      Settings__Seed__AdminName: "Administrator"
+      Settings__Seed__AdminEmail: "admin@fcg.com"
+      Settings__Seed__AdminPassword: "Admin@123"
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  catalog-api:
+    build:
+      context: ../fcg-catalog-api
+      dockerfile: Dockerfile
+    image: fcg/catalog-api:latest
+    container_name: fcg-catalog-api
+    ports:
+      - "5002:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=fcg_catalog;Username=postgres;Password=postgres"
+      Jwt__Issuer: "FCG"
+      Jwt__Audience: "FCG.Clients"
+      Jwt__SecretKey: "CHANGE_ME_super_secret_shared_key_min_32_chars_long!!"
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  payments-api:
+    build:
+      context: ../fcg-payments-api
+      dockerfile: Dockerfile
+    image: fcg/payments-api:latest
+    container_name: fcg-payments-api
+    ports:
+      - "5003:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=fcg_payments;Username=postgres;Password=postgres"
+      Payments__ApprovalCeiling: "1000"
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  notifications-api:
+    build:
+      context: ../fcg-notifications-api
+      dockerfile: Dockerfile
+    image: fcg/notifications-api:latest
+    container_name: fcg-notifications-api
+    ports:
+      - "5004:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  pgdata:

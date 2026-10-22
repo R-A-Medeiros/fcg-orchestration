@@ -1,0 +1,49 @@
+# Job que aplica o schema (tabelas) de cada microsserviço no banco correspondente,
+# dentro do cluster. Espera o Postgres ficar pronto e então roda os scripts.
+#
+# Os schemas ficam no ConfigMap db-schemas (gerado a partir dos db/init.sql dos
+# serviços - ver instrução no README). Rode este Job DEPOIS de aplicar postgres.yaml.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  labels:
+    app: db-migrate
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: db-migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: db-migrate
+          image: postgres:16
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "Aguardando o Postgres..."
+              until pg_isready -h postgres -U postgres; do sleep 2; done
+              echo "Aplicando schema em fcg_users"
+              psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d fcg_users    -f /schemas/users.schema.sql
+              echo "Aplicando schema em fcg_catalog"
+              psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d fcg_catalog  -f /schemas/catalog.schema.sql
+              echo "Aplicando schema em fcg_payments"
+              psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d fcg_payments -f /schemas/payments.schema.sql
+              echo "Schemas aplicados com sucesso."
+          volumeMounts:
+            - name: schemas
+              mountPath: /schemas
+      volumes:
+        - name: schemas
+          configMap:
+            name: db-schemas

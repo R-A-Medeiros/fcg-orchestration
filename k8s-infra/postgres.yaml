@@ -1,0 +1,113 @@
+# Infraestrutura: PostgreSQL para o cluster Kubernetes local.
+# Deployment + Service (nome "postgres", usado nas connection strings dos serviços).
+# Credenciais em Secret; configurações não sensíveis em ConfigMap.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  labels:
+    app: postgres
+data:
+  POSTGRES_USER: "postgres"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  labels:
+    app: postgres
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "postgres"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: postgres-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          # Cria os 3 bancos vazios na primeira inicialização.
+          # As tabelas são aplicadas pelo Job db-migrate (ver db-migrate-job.yaml).
+          volumeMounts:
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: initdb
+          configMap:
+            name: postgres-initdb
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+# Cria os bancos (um por microsserviço) na primeira inicialização.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  labels:
+    app: postgres
+data:
+  01-create-databases.sql: |
+    CREATE DATABASE fcg_users;
+    CREATE DATABASE fcg_catalog;
+    CREATE DATABASE fcg_payments;
