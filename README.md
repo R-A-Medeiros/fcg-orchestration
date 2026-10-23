@@ -94,15 +94,48 @@ Os manifestos de **cada serviço** ficam na pasta `k8s/` do respectivo repositó
 A **infraestrutura compartilhada** (PostgreSQL, RabbitMQ e o Job de schema) está em
 `k8s-infra/` neste repositório.
 
-### 1. Build e carga das imagens no cluster
+### 1. Build das imagens
 ```bash
 docker build -t fcg/users-api:latest         ../fcg-users-api
 docker build -t fcg/catalog-api:latest       ../fcg-catalog-api
 docker build -t fcg/payments-api:latest      ../fcg-payments-api
 docker build -t fcg/notifications-api:latest ../fcg-notifications-api
-# Com Kind, por exemplo:
-# kind load docker-image fcg/users-api:latest fcg/catalog-api:latest fcg/payments-api:latest fcg/notifications-api:latest
 ```
+
+> **Atenção:** `docker build` coloca a imagem no daemon do Docker, que **não** é o
+> mesmo runtime (containerd) usado pelo cluster Kubernetes. É preciso carregar as
+> imagens no cluster, senão os pods ficam em `ErrImagePull`. Como fazer depende do
+> cluster:
+
+**Kind**
+```bash
+kind load docker-image fcg/users-api:latest fcg/catalog-api:latest fcg/payments-api:latest fcg/notifications-api:latest
+```
+
+**Minikube**
+```bash
+minikube image load fcg/users-api:latest fcg/catalog-api:latest fcg/payments-api:latest fcg/notifications-api:latest
+```
+
+**Docker Desktop Kubernetes** (não tem comando pronto — importamos no containerd via um pod auxiliar)
+```bash
+# salva as 4 imagens em um tar
+docker save fcg/users-api:latest fcg/catalog-api:latest fcg/payments-api:latest fcg/notifications-api:latest -o fcg-all.tar
+
+# sobe um pod privilegiado que enxerga o host do cluster
+kubectl run image-loader --image=busybox:1.36 --restart=Never --overrides='{"spec":{"hostPID":true,"containers":[{"name":"loader","image":"busybox:1.36","command":["sh","-c","sleep 3600"],"securityContext":{"privileged":true},"volumeMounts":[{"name":"h","mountPath":"/host-tmp"}]}],"volumes":[{"name":"h","hostPath":{"path":"/tmp","type":"DirectoryOrCreate"}}]}}'
+kubectl wait --for=condition=Ready pod/image-loader --timeout=90s
+
+# copia o tar para o host do cluster e importa no containerd (namespace k8s.io)
+kubectl cp fcg-all.tar image-loader:/host-tmp/fcg-all.tar
+kubectl exec image-loader -- nsenter -t 1 -m -u -i -n -- ctr -n k8s.io images import /tmp/fcg-all.tar
+
+# limpa o pod auxiliar
+kubectl delete pod image-loader
+```
+
+Os deployments usam `imagePullPolicy: IfNotPresent`, então uma vez carregadas as
+imagens locais, o cluster não tenta baixá-las de um registry remoto.
 
 ### 2. Aplicar os manifestos (infra → schema → serviços)
 ```bash
@@ -119,9 +152,21 @@ kubectl apply -f ../fcg-notifications-api/k8s/
 
 ### 3. Verificar
 ```bash
-kubectl get pods
-kubectl logs job/db-migrate
+kubectl get pods            # todos os serviços devem ficar Running 1/1
+kubectl logs job/db-migrate # deve terminar com "Schemas aplicados com sucesso."
 ```
+
+### 4. Acessar as APIs (port-forward)
+Os Services são `ClusterIP`, então para testar da máquina local use `kubectl port-forward`
+(cada comando trava o terminal; rode em abas separadas):
+```bash
+kubectl port-forward svc/users-api         5001:80
+kubectl port-forward svc/catalog-api       5002:80
+kubectl port-forward svc/payments-api      5003:80
+kubectl port-forward svc/notifications-api 5004:80
+```
+Depois disso os endpoints ficam nas mesmas URLs do Compose
+(`http://localhost:5001`, etc.), incluindo `/swagger` e `/scalar/v1`.
 
 Os serviços se comunicam dentro do cluster pelos nomes de Service do Kubernetes
 (`postgres`, `rabbitmq`, `users-api`, `catalog-api`, etc.).
