@@ -1,0 +1,7 @@
+# Força fim de linha LF em arquivos que rodam dentro de containers Linux.
+# Sem isto, o Git no Windows converte para CRLF ao clonar e quebra o shebang
+# de scripts .sh (o Postgres falha com "cannot execute: required file not found").
+*.sh   text eol=lf
+*.sql  text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
